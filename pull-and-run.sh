@@ -2,14 +2,14 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: bash pull-and-run.sh multihopspatial {smoke|full}\n'
+  printf 'Usage: bash pull-and-run.sh multihopspatial {prepare|smoke|full}\n'
 }
 
 if [[ "$#" -eq 1 && "$1" == --help ]]; then
   usage
   exit 0
 fi
-if [[ "$#" -ne 2 || "$1" != multihopspatial || ( "$2" != smoke && "$2" != full ) ]]; then
+if [[ "$#" -ne 2 || "$1" != multihopspatial || ( "$2" != prepare && "$2" != smoke && "$2" != full ) ]]; then
   usage >&2
   exit 2
 fi

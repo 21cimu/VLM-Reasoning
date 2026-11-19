@@ -4,9 +4,9 @@ set -euo pipefail
 mode="${1:-}"
 case "$mode" in
   smoke) count=5 ;;
-  full) count=4500 ;;
-  --help) printf 'Usage: bash run.sh {smoke|full}\n'; exit 0 ;;
-  *) printf 'Usage: bash run.sh {smoke|full}\n' >&2; exit 2 ;;
+  prepare|full) count=4500 ;;
+  --help) printf 'Usage: bash run.sh {prepare|smoke|full}\n'; exit 0 ;;
+  *) printf 'Usage: bash run.sh {prepare|smoke|full}\n' >&2; exit 2 ;;
 esac
 
 experiment="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +30,9 @@ python="$PWD/.venv/bin/python"
 "$python" -m pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 \
   --index-url https://download.pytorch.org/whl/cu128
 "$python" -m pip install -r "$experiment/requirements-eval.txt"
-"$python" "$experiment/parallel_eval.py" --check-devices
+if [[ "$mode" != prepare ]]; then
+  "$python" "$experiment/parallel_eval.py" --check-devices
+fi
 
 if [[ ! -e author-code/.git ]]; then
   git clone --no-checkout https://github.com/youngwanLEE/multihopspatial.git author-code
@@ -88,6 +90,11 @@ if missing_images:
 print(f"Assets present: {len(images)} images for {count} questions.", flush=True)
 PY
 sha256sum -c "$experiment/assets.sha256"
+
+if [[ "$mode" == prepare ]]; then
+  printf 'MultihopSpatial assets verified at %s. After attaching a GPU, run smoke.\n' "$PWD"
+  exit 0
+fi
 
 output_dir="$(mktemp -d "$PWD/results/$mode-$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)-XXXXXX")"
 printf 'Result directory: %s\n' "$output_dir"

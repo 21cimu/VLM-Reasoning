@@ -21,8 +21,10 @@ def available_devices():
     import torch
 
     visible = torch.cuda.device_count()
+    if visible == 0:
+        raise SystemExit("CUDA sees 0 devices. Use prepare to stage assets, then attach a GPU.")
     try:
-        requested = int(os.environ.get("VLM_GPU_COUNT", "4"))
+        requested = int(os.environ.get("VLM_GPU_COUNT", str(min(4, visible))))
     except ValueError:
         raise SystemExit("VLM_GPU_COUNT must be a positive integer.") from None
     if not 1 <= requested <= visible:
