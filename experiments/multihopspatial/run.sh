@@ -3,8 +3,8 @@ set -euo pipefail
 
 mode="${1:-}"
 case "$mode" in
-  smoke) count=5; sample_args=(--test_samples "$count") ;;
-  full) count=4500; sample_args=() ;;
+  smoke) count=5 ;;
+  full) count=4500 ;;
   --help) printf 'Usage: bash run.sh {smoke|full}\n'; exit 0 ;;
   *) printf 'Usage: bash run.sh {smoke|full}\n' >&2; exit 2 ;;
 esac
@@ -30,13 +30,7 @@ python="$PWD/.venv/bin/python"
 "$python" -m pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 \
   --index-url https://download.pytorch.org/whl/cu128
 "$python" -m pip install -r "$experiment/requirements-eval.txt"
-"$python" - <<'PY'
-import torch
-
-if not torch.cuda.is_available():
-    raise SystemExit("CUDA is unavailable. Check the server's GPU and NVIDIA driver.")
-print(f"PyTorch {torch.__version__} on {torch.cuda.get_device_name(0)}", flush=True)
-PY
+"$python" "$experiment/parallel_eval.py" --check-devices
 
 if [[ ! -e author-code/.git ]]; then
   git clone --no-checkout https://github.com/youngwanLEE/multihopspatial.git author-code
@@ -104,24 +98,5 @@ printf 'Result directory: %s\n' "$output_dir"
   printf 'backend\ttransformers greedy\nmode\t%s\nexpected_rows\t%s\n' "$mode" "$count"
 } > "$output_dir/versions.tsv"
 
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "$python" author-code/eval/benchmark_qwen.py \
-  --model_path model-4b --data_dir benchmark --no_flash_attention \
-  "${sample_args[@]}" --output "$output_dir/predictions.json" \
-  2>&1 | tee "$output_dir/console.log"
-
-"$python" - "$output_dir/predictions.json" "$count" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path, count = sys.argv[1:]
-rows = json.loads(Path(path).read_bytes())
-errors = sum(row is None or bool(row.get("error")) for row in rows)
-if len(rows) != int(count) or errors:
-    raise SystemExit(f"Expected {count} rows, got {len(rows)} with {errors} errors. See {path}.")
-parsed = sum(bool(row.get("prediction")) for row in rows)
-boxes = sum(row.get("pred_bbox") is not None for row in rows)
-print(f"Saved {len(rows)} rows, {parsed} parsed answers and {boxes} boxes in {path}.")
-if not parsed or not boxes:
-    raise SystemExit("The evaluation produced no parsed answers or no parsed boxes.")
-PY
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "$python" -u "$experiment/parallel_eval.py" \
+  "$count" "$output_dir" 2>&1 | tee "$output_dir/console.log"

@@ -17,7 +17,7 @@ curl -fsSLo pull-and-run.sh https://raw.githubusercontent.com/21cimu/VLM-Reasoni
 bash pull-and-run.sh multihopspatial smoke
 ~~~
 
-试跑验收后，在同一目录运行全量。
+试跑覆盖 4 张卡。验收后，在同一目录运行全量。4 张卡各处理 1,125 题，合并后算一组官方指标。
 
 ~~~bash
 bash pull-and-run.sh multihopspatial full
