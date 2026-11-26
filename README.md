@@ -21,7 +21,7 @@ STUDY=/path/to/stage1-package
 04_evaluation_and_analysis/analysis/analyze_blue2_pilot.py
 ~~~
 
-仓库提供实验脚本、说明、合成样本测试与输入审计汇总。真实样本、旧逐题预测、E4 审核表和模型权重由各自的原始目录提供。
+仓库提供实验脚本、说明、合成样本测试、输入审计汇总，以及 [E4 全量试跑描述](experiments/instaorder_occ/e4_reviews_provisional.jsonl)。原图、旧逐题预测、正式人工复核表和模型权重由各自的原始目录提供。
 
 ## 实验输入
 
@@ -68,10 +68,32 @@ python "$CLI" --study "$STUDY" annotate --out outputs/occ_e234/blind --seed 42
 - `verified` 写独立从图上观察到的线段终止、边缘连续性、纹理变化等细节。
 - `wrong` 写句式和长度相近、经复核与原图冲突的观察。可改线条方向、连续性或纹理等特征。避免直接反转题目结论。
 - `neutral` 写长度相近、确实可见且和遮挡方向无关的细节。每段一行并使用相同语言。最长段的非空白字符数不得超过最短段的 1.5 倍。
-- `approved` 要求记录两位不同人员的标识，且所有复核项为 `true`。`excluded` 要填写原因，例如边缘太模糊。`pending` 和 `excluded` 计入覆盖率，三组 E4 均跳过。
+- `approved` 要求记录两位不同人员的标识，且所有复核项为 `true`。`excluded` 要填写原因，例如边缘太模糊。默认只运行 `approved` 的题。
 - 程序拦截常见直接答案措辞。人工复核仍需识别隐含的方向断言、和选项相近的改写以及文字控制质量。建议在查看模型表现前冻结审核文件。
 
 可用 `audit --reviews 已复核文件 --out 新目录` 检查批准覆盖率。关联键及源图 SHA-256 由程序核验，表格行顺序可变。
+
+## E4 全量试跑
+
+随附的 580 道题描述均保留 `pending` 状态。加 `--allow-provisional-reviews` 可在人工复核前试跑三种文本条件。程序仍检查三段描述、长度、直接答案措辞和原图指纹，并跳过明确排除或尚无完整描述的题。53 道需优先复核的题在文件里标为 `review_priority: high`。
+
+下面的命令从仓库根目录同时运行 E0 原图基线和三个文本条件。已有同一代码版本的 E0 结果时，也可只运行 `--arms E4`，再合并评分。
+
+~~~bash
+MODEL_ROOT=/path/to/models
+for model in treevgr qwen; do
+  CUDA_VISIBLE_DEVICES=0 python "$CLI" --study "$STUDY" run --model "$model" --model-root "$MODEL_ROOT" \
+    --arms E0 E4 --allow-provisional-reviews \
+    --reviews experiments/instaorder_occ/e4_reviews_provisional.jsonl \
+    --out "outputs/occ_e234/$model.e4-provisional.jsonl"
+
+  python "$CLI" --study "$STUDY" score --model "$model" \
+    --predictions "outputs/occ_e234/$model.e4-provisional.jsonl" \
+    --out "outputs/occ_e234/$model.e4-provisional.paired.json"
+done
+~~~
+
+试跑的预测和评分均记录 `e4_review_mode: provisional`。完成复核后，使用已审核文件和新的输出路径运行正式 E4。评分时同一组 E4 预测应来自同一审核版本和模式。
 
 ## 服务器推理
 

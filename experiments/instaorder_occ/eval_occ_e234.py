@@ -65,7 +65,7 @@ def blind_export(cases, out, seed):
             write_record(templates, review_template(case.case_id, sha))
 
 
-def prepare(case, anns, review, arms, seed):
+def prepare(case, anns, review, arms, seed, allow_provisional=False):
     image, sha = case.load_image()
     masks = None
     if "E2" in arms or set(arms).intersection(MARKS):
@@ -73,7 +73,7 @@ def prepare(case, anns, review, arms, seed):
     variants, unavailable = render(image, case, masks, arms, seed)
     notes = {}
     if set(arms).intersection(NOTES):
-        notes, reason = text_inputs(review, sha)
+        notes, reason = text_inputs(review, sha, allow_provisional)
         for arm in set(arms).intersection(NOTES):
             if reason:
                 unavailable[arm] = reason
@@ -87,7 +87,8 @@ def audit(cases, anns, reviews, args):
     counts = Counter()
     with (args.out / "cases.jsonl").open("x", encoding="utf-8") as stream:
         for i, case in enumerate(cases):
-            sha, variants, _, unavailable = prepare(case, anns, reviews.get(case.case_id), ARMS, args.seed)
+            sha, variants, _, unavailable = prepare(
+                case, anns, reviews.get(case.case_id), ARMS, args.seed, args.allow_provisional_reviews)
             counts.update(variants.keys())
             counts.update(unavailable.values())
             write_record(stream, {"id": case.row["id"], "case_id": case.case_id,
@@ -101,6 +102,7 @@ def audit(cases, anns, reviews, args):
                     if arm in variants:
                         variants[arm][0].save(folder / f"{arm}.png")
     stats = {"cases": len(cases), "seed": args.seed,
+             "e4_review_mode": "provisional" if args.allow_provisional_reviews else "human_reviewed",
              "available": {arm: counts[arm] for arm in ARMS},
              "unavailable_cases": {reason: counts[reason] // 3 for reason in
                                    ("no_boundary", "image_too_small", "no_unrelated_control",
@@ -168,13 +170,19 @@ def resume(path):
 
 def run(cases, anns, reviews, args):
     arms = tuple(dict.fromkeys(arm for group in args.arms for arm in ARM_GROUPS.get(group, (group,))))
-    if set(arms).intersection(NOTES) and args.reviews is None:
-        raise ValueError("E4 requires --reviews with completed blind human review")
+    e4_mode = None
+    if set(arms).intersection(NOTES):
+        if args.reviews is None:
+            raise ValueError("E4 requires --reviews")
+        e4_mode = "provisional" if args.allow_provisional_reviews else "human_reviewed"
+    elif args.allow_provisional_reviews:
+        raise ValueError("--allow-provisional-reviews requires an E4 condition")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     protocol = run_protocol(args)
     signature = digest(json.dumps(protocol, sort_keys=True).encode())
     review_sha = digest(args.reviews.read_bytes()) if args.reviews else None
-    metadata = {"protocol": protocol, "protocol_sha256": signature, "review_sha256": review_sha}
+    metadata = {"protocol": protocol, "protocol_sha256": signature, "review_sha256": review_sha,
+                "e4_review_mode": e4_mode}
     manifest = args.out.with_suffix(args.out.suffix + ".meta.json")
     with run_lock(args.out):
         if manifest.exists():
@@ -195,7 +203,8 @@ def run(cases, anns, reviews, args):
                 row = case.row
                 pending = [arm for arm in arms if (row["id"], arm) not in finished]
                 if pending:
-                    sha, variants, notes, unavailable = prepare(case, anns, reviews.get(case.case_id), pending, args.seed)
+                    sha, variants, notes, unavailable = prepare(
+                        case, anns, reviews.get(case.case_id), pending, args.seed, args.allow_provisional_reviews)
                 else:
                     sha = digest(case.image_path.read_bytes())
                 if any(record["image_sha256"] != sha
@@ -206,7 +215,7 @@ def run(cases, anns, reviews, args):
                               "stratum": row["stratum"], "gt": row["gt"], "condition": arm,
                               "model": args.model, "protocol_sha256": signature, "image_sha256": sha}
                     if arm in NOTES:
-                        record["review_sha256"] = review_sha
+                        record.update(review_sha256=review_sha, e4_review_mode=e4_mode)
                     if arm in unavailable:
                         record.update(status="unavailable", reason=unavailable[arm])
                     else:
@@ -309,7 +318,7 @@ def score(cases, args):
         raise ValueError("No prediction rows")
     by_id = {case.row["id"]: case for case in cases}
     image_ids = {key: case.row["image_id"] for key, case in by_id.items()}
-    signatures, review_signatures = set(), set()
+    signatures, review_sources = set(), set()
     image_hashes = {}
     for (key, arm), rec in records.items():
         if key not in by_id:
@@ -321,7 +330,10 @@ def score(cases, args):
             raise ValueError(f"Dataset or model mismatch for {key}/{arm}")
         signatures.add(rec["protocol_sha256"])
         if arm in NOTES and rec["status"] == "ok":
-            review_signatures.add(rec["review_sha256"])
+            review_mode = rec.get("e4_review_mode", "human_reviewed")
+            if review_mode not in ("human_reviewed", "provisional"):
+                raise ValueError(f"Invalid E4 review mode for {key}/{arm}")
+            review_sources.add((rec["review_sha256"], review_mode))
         sha = rec["image_sha256"]
         if image_hashes.setdefault(key, sha) != sha:
             raise ValueError(f"Source image mismatch across arms for {key}")
@@ -331,8 +343,9 @@ def score(cases, args):
                 raise ValueError(f"Invalid correctness record {key}/{arm}")
     if len(signatures) != 1:
         raise ValueError("Prediction files must share the same model, prompt protocol, data and seed")
-    if len(review_signatures) > 1:
-        raise ValueError("Scored E4 arms must come from the same reviewed JSONL snapshot")
+    if len(review_sources) > 1:
+        raise ValueError("Scored E4 arms must share the same review file and review mode")
+    review_sha, review_mode = next(iter(review_sources), (None, None))
     cohorts = {"all": set(by_id)}
     for stratum in sorted({case.row["stratum"] for case in cases}):
         cohorts[stratum] = {key for key, case in by_id.items() if case.row["stratum"] == stratum}
@@ -346,7 +359,7 @@ def score(cases, args):
                       "matches_documented_580_400_238_162": [observed, *counts] == [580, 400, 238, 162]}
     report = {"model": args.model, "protocol_sha256": next(iter(signatures)),
               "prediction_files": [str(path) for path in args.predictions],
-              "review_sha256": next(iter(review_signatures), None),
+              "review_sha256": review_sha, "e4_review_mode": review_mode,
               "historical_selection": historical, "cohorts": {}}
     for label, ids in cohorts.items():
         arm_counts = {}
@@ -382,6 +395,8 @@ def main():
             p.add_argument("--seed", type=int, default=42)
         if name in ("audit", "run"):
             p.add_argument("--reviews", type=Path)
+            p.add_argument("--allow-provisional-reviews", action="store_true",
+                           help="Use complete pending texts for an exploratory E4 run")
         if name in ("run", "score"):
             p.add_argument("--model", required=True, choices=MODEL_NAMES)
         if name == "audit":
@@ -398,6 +413,8 @@ def main():
     args.study = args.study.resolve()
     if getattr(args, "limit", 0) < 0 or getattr(args, "preview", 0) < 0:
         parser.error("--limit and --preview must be nonnegative")
+    if getattr(args, "allow_provisional_reviews", False) and args.reviews is None:
+        parser.error("--allow-provisional-reviews requires --reviews")
     try:
         all_cases = load_cases(args.study / DATASET)
         cases = all_cases[:args.limit] if getattr(args, "limit", 0) else all_cases

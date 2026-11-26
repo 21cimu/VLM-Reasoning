@@ -115,12 +115,15 @@ class Fixture(unittest.TestCase):
                 load_reviews(approvals, [self.case])
 
     def test_mock_inference_restart_and_scoring(self):
-        review_path = self.root / "approved.jsonl"
-        jsonl(review_path, self.approved_review())
+        review_path = self.root / "pending.jsonl"
+        pending = dict(self.approved_review(), status="pending", author="", reviewer="",
+                       checks=dict.fromkeys(TEXT_CHECKS, False))
+        jsonl(review_path, pending)
         reviews = load_reviews(review_path, [self.case])
         runs = self.root / "preds.jsonl"
         args = SimpleNamespace(arms=["E0", "E1", "E2", "E3", "E4"], reviews=review_path,
-                               out=runs, model="treevgr", study=self.root, seed=42)
+                               out=runs, model="treevgr", study=self.root, seed=42,
+                               allow_provisional_reviews=True)
         calls = []
 
         class MockRunner:
@@ -146,6 +149,9 @@ class Fixture(unittest.TestCase):
             cli.run([self.case], self.anns, reviews, args)
             cli.run([self.case], self.anns, reviews, args)
             self.assertEqual(len(calls), len(ARMS) + 1)
+            with self.assertRaisesRegex(ValueError, "use a fresh --out"):
+                formal = SimpleNamespace(**(vars(args) | {"allow_provisional_reviews": False}))
+                cli.run([self.case], self.anns, reviews, formal)
 
         records = list(read_jsonl(runs))
         self.assertEqual(len(records), len(ARMS))
@@ -153,12 +159,35 @@ class Fixture(unittest.TestCase):
         scorefile = self.root / "score.json"
         cli.score([self.case], SimpleNamespace(model="treevgr", predictions=[runs],
                   treevgr_e0=None, out=scorefile))
-        report = json.loads(scorefile.read_text(encoding="utf-8"))["cohorts"]["all"]
+        scoring = json.loads(scorefile.read_text(encoding="utf-8"))
+        self.assertEqual(scoring["e4_review_mode"], "provisional")
+        self.assertEqual({row["e4_review_mode"] for row in records if row["condition"] in NOTES},
+                         {"provisional"})
+        report = scoring["cohorts"]["all"]
         result = report["families"]["E2"]["comparisons"][0]
         self.assertEqual((result["n_pairs"], result["wrong_to_right"], result["right_to_wrong"]), (1, 1, 0))
         self.assertEqual(result["correction_rate"], 1.0)
         self.assertIsNone(result["harm_rate"])
         self.assertEqual(report["families"]["E4"]["common_n"], 1)
+        records[-1]["e4_review_mode"] = "human_reviewed"
+        jsonl(runs, *records)
+        with self.assertRaisesRegex(ValueError, "same review file and review mode"):
+            cli.score([self.case], SimpleNamespace(model="treevgr", predictions=[runs],
+                      treevgr_e0=None, out=self.root / "mixed.json"))
+
+    def test_provisional_requires_complete_valid_draft_bound_to_image(self):
+        pending = dict(self.approved_review(), status="pending", author="", reviewer="",
+                       checks=dict.fromkeys(TEXT_CHECKS, False))
+        sha = pending["image_sha256"]
+        self.assertEqual(text_inputs(pending, sha), (None, "review_pending"))
+        self.assertEqual(set(text_inputs(pending, sha, allow_provisional=True)[0]), set(NOTES))
+        self.assertEqual(text_inputs(dict(pending, wrong=""), sha, True), (None, "review_pending"))
+        self.assertEqual(text_inputs(dict(pending, status="excluded"), sha, True),
+                         (None, "review_excluded"))
+        with self.assertRaisesRegex(ValueError, "source image changed"):
+            text_inputs(pending, "changed", True)
+        with self.assertRaisesRegex(ValueError, "without answer cues"):
+            text_inputs(dict(pending, verified="B is correct given the visible vertical edge."), sha, True)
 
     def test_historical_cohort_merges_shards_and_rejects_overlap(self):
         rows = [

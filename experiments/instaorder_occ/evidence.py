@@ -224,6 +224,21 @@ def review_template(case_id, image_hash):
             "checks": {check: False for check in TEXT_CHECKS}, "reason": ""}
 
 
+def validate_review_text(row):
+    key = row["case_id"]
+    texts = [row[field].strip() for field in NOTE_FIELDS.values()]
+    if (not all(texts) or len(set(text.casefold() for text in texts)) != 3
+            or any("\n" in text or "\r" in text or DIRECTION.search(text)
+                   or re.match(r"^[AB](?:[.):]|$|\s+is\s+(?:correct|right|true)\b)", text, re.I)
+                   for text in texts)):
+        raise ValueError(f"{key}: review texts must be distinct one-line observations without answer cues")
+    lengths = [len(re.sub(r"\s+", "", text)) for text in texts]
+    if max(lengths) > 1.5 * min(lengths):
+        raise ValueError(f"{key}: text controls must be within 1.5x character length")
+    if not re.fullmatch(r"[0-9a-f]{64}", row["image_sha256"]):
+        raise ValueError(f"{key}: expected the exported image_sha256")
+
+
 def load_reviews(path, cases):
     reviews = {}
     if path is None:
@@ -236,20 +251,10 @@ def load_reviews(path, cases):
         status = row["status"]
         if status == "approved":
             author, reviewer = [row[key].strip().casefold() for key in ("author", "reviewer")]
-            texts = [row[key].strip() for key in NOTE_FIELDS.values()]
             if (not author or not reviewer or author == reviewer
                     or not all(row["checks"].get(check) is True for check in TEXT_CHECKS)):
                 raise ValueError(f"{key}: all review checks and two distinct human IDs are required")
-            if (not all(texts) or len(set(text.casefold() for text in texts)) != 3
-                    or any("\n" in text or "\r" in text or DIRECTION.search(text)
-                           or re.match(r"^[AB](?:[.):]|$|\s+is\s+(?:correct|right|true)\b)", text, re.I)
-                           for text in texts)):
-                raise ValueError(f"{key}: review texts must be distinct one-line observations without answer cues")
-            lengths = [len(re.sub(r"\s+", "", text)) for text in texts]
-            if max(lengths) > 1.5 * min(lengths):
-                raise ValueError(f"{key}: text controls must be within 1.5x character length")
-            if not re.fullmatch(r"[0-9a-f]{64}", row["image_sha256"]):
-                raise ValueError(f"{key}: expected the exported image_sha256")
+            validate_review_text(row)
         elif status == "excluded":
             if not row.get("reason", "").strip():
                 raise ValueError(f"{key}: missing exclusion reason")
@@ -259,11 +264,15 @@ def load_reviews(path, cases):
     return reviews
 
 
-def text_inputs(review, image_sha):
-    if review is None or review["status"] == "pending":
+def text_inputs(review, image_sha, allow_provisional=False):
+    if review is None:
         return None, "review_pending"
     if review["status"] == "excluded":
         return None, "review_excluded"
+    if review["status"] == "pending":
+        if not allow_provisional or not all(review.get(field, "").strip() for field in NOTE_FIELDS.values()):
+            return None, "review_pending"
+        validate_review_text(review)
     if review["image_sha256"] != image_sha:
         raise ValueError(f"{review['case_id']}: source image changed since export")
     return {arm: review[field].strip() for arm, field in NOTE_FIELDS.items()}, None
