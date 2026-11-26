@@ -1,0 +1,24 @@
+{
+  "cases": 580,
+  "seed": 42,
+  "available": {
+    "E0": 580,
+    "E1": 580,
+    "E2": 580,
+    "E3_boundary": 579,
+    "E3_random": 579,
+    "E3_unrelated": 579,
+    "E4_verified": 0,
+    "E4_wrong": 0,
+    "E4_neutral": 0
+  },
+  "unavailable_cases": {
+    "no_boundary": 0,
+    "image_too_small": 0,
+    "no_unrelated_control": 1,
+    "no_random_control": 0,
+    "boundary_too_close_to_corner": 0,
+    "review_pending": 580,
+    "review_excluded": 0
+  }
+}
